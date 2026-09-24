@@ -318,3 +318,22 @@ def test_navigation_during_prediction_reobserves_without_action(runner):
     assert runner.state["status"] == "ready"
     assert runner.state["decision"] is None
     runner.state["browser"].act.assert_not_called()
+
+
+def test_gateway_key_routes_to_vercel_and_maps_confidence(monkeypatch):
+    sent = {}
+
+    def post(url, key, body, headers=None):
+        sent.update(url=url, key=key, body=body, headers=headers)
+        answer = choice(body["questions"]["operation"]["criteria"], "DONE")
+        del answer["confidence"]
+        return {"answers": {"operation": {"type": "choice", **answer}},
+                "providerMetadata": {"typesafe": {"confidence": {"operation": 0.7}}}}
+
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "gw")
+    monkeypatch.setattr(model, "post_json", post)
+    d = model.choose(page(), "Find a book", [])
+    assert sent["url"] == model.GATEWAY_URL and sent["key"] == "gw"
+    assert sent["headers"]["ai-model-id"] == "typesafe-ai/jev" and "model" not in sent["body"]
+    assert d["choice"] == "DONE" and d["confidence"] == 0.7 and d["model"] == "typesafe-ai/jev"

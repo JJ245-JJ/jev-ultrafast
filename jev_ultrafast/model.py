@@ -10,12 +10,14 @@ import httpx
 from .questions import NEXT_ACTION, TARGET, TEXT_VALUE
 
 CLIENT = httpx.Client(http2=True, timeout=25)
+TYPESAFE_URL = "https://api.typesafe.ai/v1/systemone"
+GATEWAY_URL = "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"
 
 
-def post_json(url, key, body):
+def post_json(url, key, body, headers=None):
     for attempt in range(3):
         try:
-            response = CLIENT.post(url, json=body, headers={"Authorization": f"Bearer {key}"})
+            response = CLIENT.post(url, json=body, headers={"Authorization": f"Bearer {key}", **(headers or {})})
         except httpx.HTTPError:
             raise RuntimeError("Model connection failed; no action executed.") from None
         if response.status_code in {429, 529, 503} and attempt < 2:
@@ -25,6 +27,26 @@ def post_json(url, key, body):
             raise RuntimeError(f"Model provider returned HTTP {response.status_code}; no action executed.")
         return response.json()
     raise RuntimeError("Model unavailable")
+
+
+def ask_jev(body):
+    """TypeSafe direct with TYPESAFE_API_KEY, else typesafe-ai/jev on Vercel AI Gateway (AI_GATEWAY_API_KEY)."""
+    if os.environ.get("TYPESAFE_API_KEY") or not os.environ.get("AI_GATEWAY_API_KEY"):
+        return post_json(TYPESAFE_URL, os.environ["TYPESAFE_API_KEY"], body)
+    model = os.environ.get("AI_GATEWAY_JEV_MODEL", "typesafe-ai/jev")
+    headers = {
+        "ai-gateway-protocol-version": "0.0.1",
+        "ai-gateway-auth-method": "api-key",
+        "ai-evaluation-model-specification-version": "4",
+        "ai-model-id": model,
+    }
+    gateway_body = {"state": body["state"], "questions": body["questions"]}
+    result = post_json(GATEWAY_URL, os.environ["AI_GATEWAY_API_KEY"], gateway_body, headers)
+    confidence = (result.get("providerMetadata") or {}).get("typesafe", {}).get("confidence", {})
+    for name, answer in result.get("answers", {}).items():
+        # ponytail: the AI SDK answer has no confidence field; top probability stands in if TypeSafe's metadata lacks it.
+        answer.setdefault("confidence", confidence.get(name, max((answer.get("probabilities") or {}).values(), default=0)))
+    return {**result, "model": model}
 
 
 def validate_choice(answer, ids):
@@ -116,7 +138,7 @@ def choose(state, goal, history):
         "questions": questions,
     }
     started = time.perf_counter()
-    result = post_json("https://api.typesafe.ai/v1/systemone", os.environ["TYPESAFE_API_KEY"], body)
+    result = ask_jev(body)
     operation_answer = validate_choice(result["answers"].get("operation", {}), operations)
     operation = operation_answer["choice"]
     target = None
