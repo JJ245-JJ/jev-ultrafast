@@ -129,6 +129,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    import argparse
+
+    argparse.ArgumentParser(
+        prog="jev",
+        description=f"Start the Jev Ultrafast demo server on {ORIGIN} (port via TYPESAFE_DEMO_PORT).",
+    ).parse_args()
     load_environment()
     atexit.register(close_browser)
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
